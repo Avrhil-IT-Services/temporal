@@ -1,0 +1,52 @@
+trigger:
+- main  # Adjust this to your default branch name
+
+pool:
+  vmImage: 'windows-latest' # Requires a Windows agent to compile the .exe
+
+variables:
+  GO_VERSION: '1.22.x' # Temporal usually targets modern Go versions
+  TEMPORAL_VERSION: 'v1.26.2' # Replace with the specific version tag you want to build
+
+steps:
+# 1. Install Go on the build agent
+- task: GoTool@0
+  displayName: 'Use Go $(GO_VERSION)'
+  inputs:
+    version: '$(GO_VERSION)'
+
+# 2. Clone the official Temporal Server repository
+- powershell: |
+    git clone --depth 1 --branch $(TEMPORAL_VERSION) https://github.com
+  displayName: 'Clone Temporal Repository'
+
+# 3. Build the core Temporal Server binary
+- powershell: |
+    cd temporal
+    Write-Host "Compiling temporal-server.exe..."
+    go build -o $(Build.BinariesDirectory)\temporal-server.exe ./cmd/server
+  displayName: 'Build Temporal Server Binary'
+
+# 4. Clone and Build the Temporal UI Server binary (Optional but recommended)
+- powershell: |
+    git clone --depth 1 https://github.com
+    cd ui-server
+    Write-Host "Compiling temporal-ui.exe..."
+    go build -o $(Build.BinariesDirectory)\temporal-ui.exe ./cmd/server
+  displayName: 'Build Temporal UI Binary'
+
+# 5. Copy configuration templates to the output directory
+- task: CopyFiles@2
+  displayName: 'Copy Configuration Templates'
+  inputs:
+    SourceFolder: '$(Build.SourcesDirectory)/temporal/config'
+    Contents: '**/*.yaml'
+    TargetFolder: '$(Build.BinariesDirectory)/config'
+
+# 6. Publish the compiled binaries as an Azure DevOps Pipeline Artifact
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Build Artifacts'
+  inputs:
+    targetPath: '$(Build.BinariesDirectory)'
+    artifact: 'temporal-windows-server'
+    publishLocation: 'pipeline'
