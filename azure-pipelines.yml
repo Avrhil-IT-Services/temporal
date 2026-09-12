@@ -11,7 +11,7 @@ variables:
 
   # Keep this aligned with the Go version required by the selected
   # Temporal Server/UI Server releases.
-  GO_VERSION: '1.23.x'
+  GO_VERSION: '1.23.12'
 
   OUTPUT_DIR: '$(Build.BinariesDirectory)\temporal'
 
