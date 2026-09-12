@@ -278,7 +278,7 @@ steps:
     Build Number: $(Build.BuildNumber)
     Source Branch: $(Build.SourceBranch)
     Source Commit: $(Build.SourceVersion)
-    Build Date UTC: $(Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+    Build Date UTC: $((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))
     "@ | Out-File `
       "$output\BUILD-INFO.txt" `
       -Encoding utf8
