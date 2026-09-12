@@ -1,52 +1,315 @@
 trigger:
-- main  # Adjust this to your default branch name
+  - main
 
 pool:
-  vmImage: 'windows-latest' # Requires a Windows agent to compile the .exe
+  vmImage: 'windows-latest'
 
 variables:
-  GO_VERSION: '1.22.x' # Temporal usually targets modern Go versions
-  TEMPORAL_VERSION: 'v1.26.2' # Replace with the specific version tag you want to build
+  # Pin versions. Do not use "latest" for production builds.
+  TEMPORAL_VERSION: 'v1.26.2'
+  TEMPORAL_UI_SERVER_VERSION: 'v2.33.0'
+
+  # Keep this aligned with the Go version required by the selected
+  # Temporal Server/UI Server releases.
+  GO_VERSION: '1.23.x'
+
+  OUTPUT_DIR: '$(Build.BinariesDirectory)\temporal'
 
 steps:
-# 1. Install Go on the build agent
+
+# ============================================================
+# 1. Install Go
+# ============================================================
+
 - task: GoTool@0
-  displayName: 'Use Go $(GO_VERSION)'
+  displayName: 'Install Go $(GO_VERSION)'
   inputs:
     version: '$(GO_VERSION)'
 
-# 2. Clone the official Temporal Server repository
+
+# ============================================================
+# 2. Verify Go
+# ============================================================
+
 - powershell: |
-    git clone --depth 1 --branch $(TEMPORAL_VERSION) https://github.com
-  displayName: 'Clone Temporal Repository'
+    $ErrorActionPreference = "Stop"
 
-# 3. Build the core Temporal Server binary
+    Write-Host "Go version:"
+    go version
+
+    Write-Host ""
+    Write-Host "Go environment:"
+    go env GOOS GOARCH GOVERSION
+
+  displayName: 'Verify Go installation'
+
+
+# ============================================================
+# 3. Clone Temporal Server
+# ============================================================
+
 - powershell: |
-    cd temporal
-    Write-Host "Compiling temporal-server.exe..."
-    go build -o $(Build.BinariesDirectory)\temporal-server.exe ./cmd/server
-  displayName: 'Build Temporal Server Binary'
+    $ErrorActionPreference = "Stop"
 
-# 4. Clone and Build the Temporal UI Server binary (Optional but recommended)
+    $repo = "$(Build.SourcesDirectory)\temporal"
+
+    if (Test-Path $repo) {
+        Remove-Item $repo -Recurse -Force
+    }
+
+    git clone `
+      --depth 1 `
+      --branch "$(TEMPORAL_VERSION)" `
+      https://github.com/temporalio/temporal.git `
+      $repo
+
+    Set-Location $repo
+
+    Write-Host "Temporal commit:"
+    git rev-parse HEAD
+
+    Write-Host "Temporal version:"
+    git describe --tags --always
+
+  displayName: 'Clone Temporal Server'
+
+
+# ============================================================
+# 4. Validate Go version required by Temporal
+# ============================================================
+
 - powershell: |
-    git clone --depth 1 https://github.com
-    cd ui-server
-    Write-Host "Compiling temporal-ui.exe..."
-    go build -o $(Build.BinariesDirectory)\temporal-ui.exe ./cmd/server
-  displayName: 'Build Temporal UI Binary'
+    $ErrorActionPreference = "Stop"
 
-# 5. Copy configuration templates to the output directory
-- task: CopyFiles@2
-  displayName: 'Copy Configuration Templates'
-  inputs:
-    SourceFolder: '$(Build.SourcesDirectory)/temporal/config'
-    Contents: '**/*.yaml'
-    TargetFolder: '$(Build.BinariesDirectory)/config'
+    Set-Location "$(Build.SourcesDirectory)\temporal"
 
-# 6. Publish the compiled binaries as an Azure DevOps Pipeline Artifact
+    Write-Host "Temporal go.mod:"
+    Get-Content go.mod | Select-String "^go "
+
+    Write-Host ""
+    Write-Host "Go version:"
+    go version
+
+  displayName: 'Validate Temporal Go requirements'
+
+
+# ============================================================
+# 5. Download Temporal dependencies
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    Set-Location "$(Build.SourcesDirectory)\temporal"
+
+    go mod download
+
+  displayName: 'Download Temporal dependencies'
+
+
+# ============================================================
+# 6. Build Temporal Server
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $source = "$(Build.SourcesDirectory)\temporal"
+    $output = "$(OUTPUT_DIR)"
+
+    New-Item -ItemType Directory -Force -Path $output | Out-Null
+
+    Set-Location $source
+
+    Write-Host "Building Temporal Server..."
+
+    go build `
+      -trimpath `
+      -ldflags="-s -w" `
+      -o "$output\temporal-server.exe" `
+      ./cmd/server
+
+    if (!(Test-Path "$output\temporal-server.exe")) {
+        throw "Temporal Server binary was not created."
+    }
+
+    Write-Host ""
+    Write-Host "Temporal Server built successfully."
+
+    Get-Item "$output\temporal-server.exe"
+
+  displayName: 'Build Temporal Server'
+
+
+# ============================================================
+# 7. Verify Temporal Server binary
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $binary = "$(OUTPUT_DIR)\temporal-server.exe"
+
+    Write-Host "Testing Temporal Server binary..."
+
+    & $binary --help
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Temporal Server binary failed validation."
+    }
+
+  displayName: 'Validate Temporal Server'
+
+
+# ============================================================
+# 8. Clone Temporal UI Server
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $repo = "$(Build.SourcesDirectory)\ui-server"
+
+    if (Test-Path $repo) {
+        Remove-Item $repo -Recurse -Force
+    }
+
+    git clone `
+      --depth 1 `
+      --branch "$(TEMPORAL_UI_SERVER_VERSION)" `
+      https://github.com/temporalio/ui-server.git `
+      $repo
+
+    Set-Location $repo
+
+    Write-Host "UI Server commit:"
+    git rev-parse HEAD
+
+    Write-Host "UI Server version:"
+    git describe --tags --always
+
+  displayName: 'Clone Temporal UI Server'
+
+
+# ============================================================
+# 9. Download UI Server dependencies
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    Set-Location "$(Build.SourcesDirectory)\ui-server"
+
+    go mod download
+
+  displayName: 'Download UI Server dependencies'
+
+
+# ============================================================
+# 10. Build Temporal UI Server
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $source = "$(Build.SourcesDirectory)\ui-server"
+    $output = "$(OUTPUT_DIR)"
+
+    Set-Location $source
+
+    Write-Host "Building Temporal UI Server..."
+
+    go build `
+      -trimpath `
+      -ldflags="-s -w" `
+      -o "$output\temporal-ui-server.exe" `
+      ./cmd/server
+
+    if (!(Test-Path "$output\temporal-ui-server.exe")) {
+        throw "Temporal UI Server binary was not created."
+    }
+
+    Write-Host ""
+    Write-Host "Temporal UI Server built successfully."
+
+    Get-Item "$output\temporal-ui-server.exe"
+
+  displayName: 'Build Temporal UI Server'
+
+
+# ============================================================
+# 11. Copy Temporal configuration
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $source = "$(Build.SourcesDirectory)\temporal\config"
+    $destination = "$(OUTPUT_DIR)\config"
+
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+
+    Copy-Item `
+      "$source\*.yaml" `
+      $destination `
+      -Recurse `
+      -Force
+
+    Write-Host "Configuration files copied."
+
+    Get-ChildItem $destination -Recurse
+
+  displayName: 'Copy Temporal configuration'
+
+
+# ============================================================
+# 12. Create deployment metadata
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    $output = "$(OUTPUT_DIR)"
+
+    @"
+    Temporal Server Version: $(TEMPORAL_VERSION)
+    Temporal UI Server Version: $(TEMPORAL_UI_SERVER_VERSION)
+    Go Version: $(GO_VERSION)
+    Build Number: $(Build.BuildNumber)
+    Source Branch: $(Build.SourceBranch)
+    Source Commit: $(Build.SourceVersion)
+    Build Date UTC: $(Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+    "@ | Out-File `
+      "$output\BUILD-INFO.txt" `
+      -Encoding utf8
+
+  displayName: 'Create build metadata'
+
+
+# ============================================================
+# 13. List final artifacts
+# ============================================================
+
+- powershell: |
+    $ErrorActionPreference = "Stop"
+
+    Write-Host "=========================================="
+    Write-Host "Temporal Windows Build"
+    Write-Host "=========================================="
+
+    Get-ChildItem "$(OUTPUT_DIR)" -Recurse |
+      Select-Object FullName, Length, LastWriteTime
+
+  displayName: 'List build artifacts'
+
+
+# ============================================================
+# 14. Publish artifact
+# ============================================================
+
 - task: PublishPipelineArtifact@1
-  displayName: 'Publish Build Artifacts'
+  displayName: 'Publish Temporal Windows Server'
   inputs:
-    targetPath: '$(Build.BinariesDirectory)'
+    targetPath: '$(OUTPUT_DIR)'
     artifact: 'temporal-windows-server'
     publishLocation: 'pipeline'
